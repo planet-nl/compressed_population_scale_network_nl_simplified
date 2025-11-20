@@ -1,0 +1,6 @@
+label,layer,binary,layer_id
+household,1,1,0
+school,2,2,1
+neighbor,3,4,2
+work,4,8,3
+family,5,16,4
