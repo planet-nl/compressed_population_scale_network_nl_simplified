@@ -18,6 +18,6 @@ echo -e "RUN $(date +'%Y-%m-%d_%H-%M-%S')\n\n" >$error_file
 for year in `seq $start_year $end_year`
 do
     echo -e "==============================\n YEAR $year \n==============================" | tee -a $log_file $error_file
-    /c/mambaforge/envs/9629/python.exe src/grouped_networks.py $input_folder $output_folder $year >>$log_file 2>>$error_file
+    /c/mambaforge/envs/9629/python.exe "$(dirname "$0")/grouped_networks.py" $input_folder $output_folder $year >>$log_file 2>>$error_file
 done
     

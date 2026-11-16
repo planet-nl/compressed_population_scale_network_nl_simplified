@@ -54,7 +54,7 @@ Notes:
 - Requires mlnlib library for loading/saving MLN format
 - Uses sparse matrix operations for memory efficiency
 - Processing time depends on network size (typically minutes to hours for population-scale)
-- Ensure output_folder/src/layers.csv exists with correct binary encodings
+- The target encoding is read from layers.csv located next to this script
 
 """
 
@@ -131,8 +131,8 @@ if not os.path.exists(output_year_path):
 
 # Load the target binary encoding scheme for the simplified network
 # This defines the new encoding: household=1, school=2, neighbor=4, work=8, family=16
-layer_to_new_binary = pd.read_csv(os.path.join(output_folder, "src", "layers.csv"))
-layer_to_new_binary = layer_to_new_binary.set_index("label")["binary"].to_dict()
+new_layers = pd.read_csv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "layers.csv"))
+layer_to_new_binary = new_layers.set_index("label")["binary"].to_dict()
 
 print("\nTarget layer binary encodings (for simplified network):")
 print(json.dumps(layer_to_new_binary, indent=4))
@@ -145,7 +145,7 @@ print(f"\nLoading network for year {year}...")
 tic = time()
 popnet = MultiLayerNetwork(
     load_from_library=True,
-    library_path=f"{input_folder}\\{year}",
+    library_path=os.path.join(input_folder, str(year)),
     use_polars=True  # Use polars for faster data loading if available
 )
 toc = time()
@@ -159,10 +159,8 @@ print("\nSymmetrizing and grouping network layers...")
 tic = time()
 
 # Initialize empty sparse matrix for the new adjacency matrix
-A = csr_matrix((popnet.N, popnet.N), dtype="int64")
+A = csr_matrix((popnet.N, popnet.N), dtype="uint8")
 
-# Precompute transpose for efficiency (used in symmetrization)
-popnet_AT = popnet.A.T
 # Process each grouped layer
 for layer, bin in layer_to_binary.items():
     print(f"\n  Processing layer: {layer}")
@@ -173,20 +171,11 @@ for layer, bin in layer_to_binary.items():
     temp.data = temp.data & bin  # Bitwise AND to isolate this layer's edges
     temp.eliminate_zeros()        # Remove zeros for memory efficiency
     
-    # Extract edges from the transposed matrix (captures reverse direction)
-    print("    - Filtering transposed adjacency matrix...")
-    temp2 = popnet_AT.copy()
-    temp2.data = temp2.data & bin
-    temp2.eliminate_zeros()
-    
     # Symmetrize: combine both directions to create undirected edges
-    # (A + A^T) > 0 creates a binary matrix where edge exists if present in either direction
+    # (A & bin)^T == A^T & bin, so the transpose of the filtered matrix gives the reverse direction
+    # (temp + temp^T) > 0 creates a binary matrix where edge exists if present in either direction
     print("    - Creating symmetric (undirected) layer matrix...")
-    temp = csr_matrix((temp + temp2) > 0, dtype="int64") * layer_to_new_binary.get(layer)
-    temp.eliminate_zeros()
-    
-    # Clean up temporary transpose matrix
-    del temp2
+    temp = ((temp + temp.T) > 0).astype("uint8") * layer_to_new_binary[layer]
     
     # Add this layer to the cumulative adjacency matrix
     A += temp
@@ -194,27 +183,23 @@ for layer, bin in layer_to_binary.items():
 toc = time()
 
 # Clean up memory
-del popnet_AT
 gc.collect()
 
 print(f"\nSymmetrization complete in {toc-tic:.1f}s")
-print(f"Total edges in simplified network: {A.nnz:,}")
+print(f"Total undirected edges in simplified network: {(A.nnz + A.diagonal().astype(bool).sum()) // 2:,}")
 
 # ==============================================================================
 # STEP 5: UPDATE NETWORK OBJECT AND SAVE
 # ==============================================================================
 
-# Replace the adjacency matrix with our new simplified, undirected version
-# This preserves the node set and all node attributes from the original network
-popnet.A = A
-
-# Update the layer table to reflect the new 5-layer structure
-popnet.layers = pd.read_csv(f"{output_folder}\\src\\layers.csv")
+# Build a new network object with the simplified, undirected adjacency matrix and the 5-layer table
+# This preserves the node set and all node attributes, and lets mlnlib rebuild its internal layer lookups
+popnet = MultiLayerNetwork(nodes=popnet.nodes, edges=A, layers=new_layers, codebook=popnet.codebook, use_polars=popnet.use_polars)
 
 # Save the simplified network in MLN format
-print(f"\nSaving simplified network to {output_folder}\\{year}...")
+print(f"\nSaving simplified network to {output_year_path}...")
 tic = time()
-popnet.save(f"{output_folder}\\{year}", overwrite=True)
+popnet.save(output_year_path, overwrite=True)
 toc = time()
 
 print(f"Network saved successfully in {toc-tic:.1f}s")
